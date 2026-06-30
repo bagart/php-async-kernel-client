@@ -1,0 +1,13 @@
+/vendor/
+composer.lock
+.phpunit.result.cache
+.phpunit.cache
+coverage/
+.phpactor.php
+.phpstorm.meta.php
+.DS_Store
+/.idea
+/.vscode
+/.fleet
+/.nova
+/.zed
