@@ -150,23 +150,38 @@ describe('ConnectionPool', function () {
 });
 
 describe('HttpsSocketClientConfig', function () {
-    it('defaults to legacy non-pooling behaviour', function () {
+    it('defaults to connection pooling enabled, http/1.1 ALPN', function () {
         $cfg = new HttpsSocketClientConfig();
 
-        expect($cfg->keepAlive)->toBeFalse()
-            ->and($cfg->effectiveAlpn())->toBe('h2,http/1.1');
+        expect($cfg->keepAlive)->toBeTrue()
+            ->and($cfg->http2Enabled)->toBeFalse()
+            ->and($cfg->effectiveAlpn())->toBe('http/1.1');
     });
 
-    it('forces http/1.1 ALPN when keepAlive is enabled', function () {
-        $cfg = new HttpsSocketClientConfig(keepAlive: true);
+    it('advertises h2 when http2Enabled is true', function () {
+        $cfg = new HttpsSocketClientConfig(http2Enabled: true);
 
-        expect($cfg->effectiveAlpn())->toBe('http/1.1');
+        expect($cfg->effectiveAlpn())->toBe('h2,http/1.1');
     });
 
-    it('honours an explicit alpn override over the keepAlive default', function () {
-        $cfg = new HttpsSocketClientConfig(keepAlive: true, alpnProtos: 'h2');
+    it('honours an explicit alpn override over http2Enabled', function () {
+        $cfg = new HttpsSocketClientConfig(http2Enabled: true, alpnProtos: 'h2');
 
         expect($cfg->effectiveAlpn())->toBe('h2');
+    });
+
+    it('separates ALPN from keepAlive — http2Enabled controls capability', function () {
+        $withoutH2 = new HttpsSocketClientConfig(keepAlive: false, http2Enabled: false);
+        $withH2 = new HttpsSocketClientConfig(keepAlive: false, http2Enabled: true);
+
+        expect($withoutH2->effectiveAlpn())->toBe('http/1.1')
+            ->and($withH2->effectiveAlpn())->toBe('h2,http/1.1');
+    });
+
+    it('enforces a per-host connection cap by default', function () {
+        $cfg = new HttpsSocketClientConfig();
+
+        expect($cfg->maxConnectionsPerHost)->toBe(16);
     });
 });
 
@@ -195,12 +210,20 @@ describe('HttpsSocketClient tick/flush/eof', function () {
         ))->toBeTrue();
     });
 
-    it('reports a keepAlive warm-up as progress', function () {
+    it('warmUp is a no-op when keepAlive is disabled', function () {
         // warmUp() is a no-op without keepAlive, and must report 0 warmed — and crucially
         // must NOT throw (this is the regression for the property-declaration bug).
         $client = new HttpsSocketClient(new HttpsSocketClientConfig(keepAlive: false));
 
         expect($client->warmUp('localhost', 2))->toBe(0);
+    });
+
+    it('exposes a MetricsCollector instance', function () {
+        $client = new HttpsSocketClient(new HttpsSocketClientConfig(keepAlive: false));
+
+        expect($client->metrics())->toBeInstanceOf(
+            \BAGArt\ASKClient\Client\ConnectionManager\MetricsCollector::class,
+        );
     });
 
     it('returns 0 from flushQueue when the queue is empty', function () {
@@ -315,8 +338,8 @@ describe('HttpsSocketClient (live network)', function () use ($liveNet) {
             ->and($client->idlePoolSize())->toBe(0);
     });
 
-    it('reuses a kept-alive connection across two sequential requests', function () {
-        $client = new HttpsSocketClient(new HttpsSocketClientConfig(keepAlive: true));
+    it('reuses a keep-alive connection across two sequential requests', function () {
+        $client = new HttpsSocketClient();
 
         $first = $client->request(new ASKHttpRequest(url: liveUrl(), method: 'GET'));
         $client->drain();
@@ -336,7 +359,6 @@ describe('HttpsSocketClient (live network)', function () use ($liveNet) {
 
     it('warms up connections into the pool', function () {
         $client = new HttpsSocketClient(new HttpsSocketClientConfig(
-            keepAlive: true,
             maxIdlePerHost: 4,
         ));
 

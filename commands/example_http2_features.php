@@ -15,7 +15,7 @@ if (!defined('CURL_HTTP_VERSION_2_0')) {
     exit(1);
 }
 
-[$transportName, $makeTransport] = require __DIR__.'/includes/select-transport.php';
+[$transportName, $makeTransport] = require __DIR__.'/includes/select_transport.php';
 
 /**
  * Images from httpbin — small enough for a quick demo, big enough to show body size.

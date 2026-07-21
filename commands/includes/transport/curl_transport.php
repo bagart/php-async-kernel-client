@@ -12,7 +12,7 @@ use BAGArt\ASKClient\Request\ASKHttpRequest;
  * Build a cURL-based ASKClient transport.
  *
  * Usage:
- *   $makeTransport = require __DIR__.'/includes/curl-transport.php';
+ *   $makeTransport = require __DIR__.'/includes/curl_transport.php';
  *   $transport = $makeTransport();
  *   $transport = $makeTransport([CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_2_0]);
  *

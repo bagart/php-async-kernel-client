@@ -12,7 +12,7 @@ use BAGArt\AsyncKernel\Promise\ASKPromiseResolver;
 use BAGArt\AsyncKernel\Wrappers\ASKLogWrapper;
 
 /**
- * ASKClient async benchmark — master/worker architecture.
+ * ASKClient async transport benchmark — master/worker architecture.
  *
  * Tests how each transport handles N concurrent requests to different domains.
  * All sources from currency-sources.php are fetched in chunks limited by
@@ -25,28 +25,31 @@ use BAGArt\AsyncKernel\Wrappers\ASKLogWrapper;
  *   Runs the benchmark for a single transport, outputs JSON result to stdout.
  *
  * Usage:
- *   php commands/benchmark.php                        # master: spawns workers
- *   php commands/benchmark.php --transport=guzzle     # worker: single transport
- *   php commands/benchmark.php --concurrent=20
- *   php commands/benchmark.php --runs=3
- *   php commands/benchmark.php --format=json          # master outputs JSON
- *   php commands/benchmark.php --help
+ *   php commands/benchmark_transport.php                        # master: spawns workers
+ *   php commands/benchmark_transport.php --transport=guzzle     # worker: single transport
+ *   php commands/benchmark_transport.php --concurrent=20
+ *   php commands/benchmark_transport.php --runs=3
+ *   php commands/benchmark_transport.php --format=json          # master outputs JSON
+ *   php commands/benchmark_transport.php --help
  */
 
 require_once __DIR__.'/../../../../vendor/autoload.php';
 
-$definedOptions = ['transport::', 'runs::', 'format::', 'timeout::', 'seed::', 'help'];
+$definedOptions = ['transport::', 'runs::', 'format::', 'timeout::', 'seed::', 'help', 'list', 'xhprof::', 'xhprof-dir::', 'clear'];
 
 $options = getopt('', $definedOptions);
 
 if (isset($options['help'])) {
     $transports = implode(', ', TransportRegistry::build()->types());
     echo "Usage:
-php commands/benchmark.php                        # master: spawns workers
-php commands/benchmark.php --transport=guzzle     # worker: single transport
-php commands/benchmark.php --runs=1               # repeats, median kept
-php commands/benchmark.php --format=json          # master outputs JSON
-php commands/benchmark.php --timeout=600          # worker timeout in seconds
+php commands/benchmark_transport.php                        # master: spawns workers
+php commands/benchmark_transport.php --transport=guzzle     # worker: single transport
+php commands/benchmark_transport.php --runs=1               # repeats, median kept
+php commands/benchmark_transport.php --format=json          # master outputs JSON
+php commands/benchmark_transport.php --timeout=600          # worker timeout in seconds
+php commands/benchmark_transport.php --xhprof               # master: enable XHProf profiling
+php commands/benchmark_transport.php --clear                # remove XHProf profiles directory
+php commands/benchmark_transport.php --list                 # list available transports
 
 Options:
   --transport=<type>                   one of: {$transports} (default: master)
@@ -54,11 +57,40 @@ Options:
   --format=<text|json>                 output format (default: text)
   --timeout=N                          worker timeout in seconds (default: 120)
   --seed=N                             worker RNG seed (master auto-assigns per transport)
+  --xhprof                             enable XHProf profiling (implies --format=json)
+  --xhprof-dir=<path>                  XHProf base directory (default: storage/app/tmp/xhprof)
+  --clear                              remove XHProf benchmark-transport directory
   --help
+  --list
 
 All sources from currency-sources.php are fetched simultaneously.
 The metric is total time to complete all requests and RPS.
 ";
+    exit(0);
+}
+
+if (isset($options['list'])) {
+    echo implode(PHP_EOL, TransportRegistry::build()->types()).PHP_EOL;
+    exit(0);
+}
+
+// --clear: remove xhprof/benchmark-transport directory
+if (isset($options['clear'])) {
+    $xhprofClearBase = (string)($options['xhprof-dir'] ?? dirname(__DIR__, 4).'/storage/app/tmp/xhprof');
+    $xhprofClearDir = $xhprofClearBase.'/benchmark-transport';
+    if (!is_dir($xhprofClearDir)) {
+        echo "Nothing to clear (not found: {$xhprofClearDir})\n";
+    } else {
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($xhprofClearDir, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($it as $f) {
+            $f->isDir() ? @rmdir((string)$f) : @unlink((string)$f);
+        }
+        @rmdir($xhprofClearDir);
+        echo "Cleared: {$xhprofClearDir}\n";
+    }
     exit(0);
 }
 
@@ -81,20 +113,37 @@ if ($transportFilter === '') {
         throw new ASKTechnicalException("Directory $tmpDir was not created");
     }
 
+    $xhprofTimestamp = '';
+    $xhprofDir = '';
+    if (isset($options['xhprof'])) {
+        $xhprofTimestamp = $options['xhprof'] !== false ? $options['xhprof'] : date('Y-m-d_H-i-s');
+        $xhprofBaseDir = (string)($options['xhprof-dir'] ?? dirname(__DIR__, 4).'/storage/app/tmp/xhprof');
+        $xhprofDir = $xhprofBaseDir.'/benchmark-transport';
+        if (!is_dir($xhprofDir)) {
+            mkdir($xhprofDir, 0700, true);
+        }
+        echo "XHProf enabled, profiles → {$xhprofDir}/".PHP_EOL;
+    }
+
     $processes = [];
     foreach ($transports as $name) {
         $outPath = $tmpDir.'/'.preg_replace('/[^a-z0-9_-]/i', '_', $name).'.out';
         $errPath = $tmpDir.'/'.preg_replace('/[^a-z0-9_-]/i', '_', $name).'.err';
 
+        $extraArgs = $xhprofTimestamp !== ''
+            ? ' --xhprof='.escapeshellarg($xhprofTimestamp).' --xhprof-dir='.escapeshellarg($xhprofBaseDir)
+            : '';
+
         $pipes = [];
         $process = @proc_open(
             sprintf(
-                '%s %s --transport=%s --runs=%d --seed=%d',
+                '%s %s --transport=%s --runs=%d --seed=%d%s',
                 escapeshellarg($phpBin),
                 escapeshellarg($script),
                 escapeshellarg($name),
                 $runs,
                 crc32($name),
+                $extraArgs,
             ),
             [
                 0 => ['pipe', 'r'],
@@ -197,6 +246,9 @@ if ($transportFilter === '') {
             break;
         }
     }
+
+    // Collect geo data before cleanup
+    $geoData = collectGeoData($transports, $tmpDir);
 
     // Cleanup temp files after all workers have drained and closed.
     foreach ($processes as $p) {
@@ -303,20 +355,151 @@ if ($transportFilter === '') {
     usort($risks, fn ($a, $b) => $b['ratio'] <=> $a['ratio']);
     $risks = array_slice($risks, 0, 5);
 
+    // XHProf: rename .tmp → RATIO_name.xhprof
+    $resultRatio = 1.0;
+    if ($xhprofTimestamp !== '') {
+        $bestTime = INF;
+        foreach ($results as $r) {
+            if ($r['error'] === null && $r['concurrent_time'] > 0 && $r['concurrent_time'] < $bestTime) {
+                $bestTime = $r['concurrent_time'];
+            }
+        }
+
+        foreach ($results as $name => $r) {
+            if ($r['error'] !== null) {
+                continue;
+            }
+            $tmpPath = $xhprofDir.'/'.$xhprofTimestamp.'_'.$name.'.xhprof.tmp';
+            $ratio = $bestTime > 0 && $bestTime < INF ? round($r['concurrent_time'] / $bestTime, 2) : 1;
+            $finalPath = $xhprofDir.'/'.$xhprofTimestamp.'_'.sprintf('%.2f', $ratio).'_'.$name.'.xhprof';
+            if (file_exists($tmpPath)) {
+                rename($tmpPath, $finalPath);
+            }
+            if ($ratio > $resultRatio) {
+                $resultRatio = $ratio;
+            }
+        }
+
+        // Clean up leftover .tmp files
+        foreach (glob($xhprofDir.'/'.$xhprofTimestamp.'_*.xhprof.tmp') ?: [] as $tmpFile) {
+            @unlink($tmpFile);
+        }
+    }
+
     if ($outputFormat === 'json') {
-        echo json_encode([
-                'results' => $results,
-                'risks' => $risks,
-                'retries' => $retries,
-            ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n";
+        $jsonOutput = [
+            'results' => $results,
+            'risks' => $risks,
+            'retries' => $retries,
+            'geo' => $geoData,
+        ];
+        if ($xhprofTimestamp !== '') {
+            $resultPath = $xhprofDir.'/'.$xhprofTimestamp.'_'.sprintf('%.2f', $resultRatio).'_result.json';
+            file_put_contents($resultPath, json_encode($jsonOutput, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+            $geoPath = $xhprofDir.'/'.$xhprofTimestamp.'_'.sprintf('%.2f', $resultRatio).'__geo.json';
+            file_put_contents($geoPath, json_encode($geoData, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+            $jsonOutput['result_path'] = $resultPath;
+            $jsonOutput['geo_path'] = $geoPath;
+            $jsonOutput['xhprof_dir'] = $xhprofDir;
+        }
+        echo json_encode($jsonOutput, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n";
         exit(0);
     }
 
-    require __DIR__.'/includes/benchmark/result.php';
+    // Save result.json and geo.json for text format too when xhprof is enabled
+    if ($xhprofTimestamp !== '') {
+        $resultPath = $xhprofDir.'/'.$xhprofTimestamp.'_'.sprintf('%.2f', $resultRatio).'_result.json';
+        file_put_contents($resultPath, json_encode([
+            'results' => $results,
+            'risks' => $risks,
+            'retries' => $retries,
+        ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+        $geoPath = $xhprofDir.'/'.$xhprofTimestamp.'_'.sprintf('%.2f', $resultRatio).'__geo.json';
+        file_put_contents($geoPath, json_encode($geoData, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+    }
+
+    if ($geoData !== []) {
+        echo "\n--- Geo location ---\n";
+        foreach ($geoData as $transport => $geo) {
+            if (isset($geo['error'])) {
+                echo "  {$transport}: ERROR {$geo['error']}\n";
+            } else {
+                echo "  {$transport}: {$geo['country']}, {$geo['isp']}".(isset($geo['ip']) ? " ({$geo['ip']})" : '')."\n";
+            }
+        }
+    }
+
+    require __DIR__.'/includes/benchmark_transport/result.php';
     render_benchmark_results($results, $retries, $risks, $runs);
+
+    if ($xhprofTimestamp !== '') {
+        echo "\nXHProf profiles: {$xhprofDir}/\n";
+        echo "Result file: {$resultPath}\n";
+    }
 
     echo "\nDone.\n";
     exit(0);
+}
+
+/**
+ * Collect IP geolocation data by running ip_geolocation for each transport.
+ *
+ * @param  list<string>  $transports
+ * @return array<string, array{ip?: string, country?: string, isp?: string, error?: string}>
+ */
+function collectGeoData(array $transports, string $tmpDir): array
+{
+    $geoData = [];
+    $phpBin = PHP_BINARY;
+    $geoScript = __DIR__.'/ip_geolocation.php';
+
+    foreach ($transports as $name) {
+        $safeName = preg_replace('/[^a-z0-9_-]/i', '_', $name);
+        $outPath = $tmpDir.'/'.$safeName.'__geo.out';
+        $errPath = $tmpDir.'/'.$safeName.'__geo.err';
+
+        $pipes = [];
+        $process = @proc_open(
+            sprintf(
+                '%s %s --json --no-ip --transport=%s',
+                escapeshellarg($phpBin),
+                escapeshellarg($geoScript),
+                escapeshellarg($name),
+            ),
+            [
+                0 => ['pipe', 'r'],
+                1 => ['file', $outPath, 'w'],
+                2 => ['file', $errPath, 'w'],
+            ],
+            $pipes
+        );
+
+        if (!is_resource($process)) {
+            $geoData[$name] = ['error' => 'Failed to spawn geo process'];
+            continue;
+        }
+        fclose($pipes[0]);
+        $exitCode = proc_close($process);
+
+        $output = trim((string) @file_get_contents($outPath));
+        @unlink($outPath);
+        @unlink($errPath);
+
+        if ($exitCode !== 0 || $output === '') {
+            $geoData[$name] = ['error' => "Geo process failed (exit: {$exitCode})"];
+            continue;
+        }
+
+        $decoded = json_decode($output, true);
+        if (!is_array($decoded)) {
+            $geoData[$name] = ['error' => 'Invalid geo JSON response'];
+            continue;
+        }
+
+        $geoData[$name] = $decoded;
+    }
+
+    return $geoData;
 }
 
 if (!$registry->has($transportFilter)) {
@@ -328,12 +511,25 @@ $makeTransport = fn () => $registry->make($transportFilter);
 $sources = require __DIR__.'/includes/currency-sources.php';
 $baselineMemory = memory_get_usage(true);
 
+// Worker XHProf: enable if --xhprof passed
+$xhprofTimestamp = $options['xhprof'] ?? '';
+$xhprofWorkerEnabled = $xhprofTimestamp !== '' && $xhprofTimestamp !== false;
+if ($xhprofWorkerEnabled) {
+    $xhprofWorkerDir = ((string)($options['xhprof-dir'] ?? dirname(__DIR__, 4).'/storage/app/tmp/xhprof')).'/benchmark-transport';
+    if (extension_loaded('xhprof')) {
+        xhprof_enable(XHPROF_FLAGS_CPU | XHPROF_FLAGS_MEMORY);
+        fwrite(STDERR, "[benchmark_transport] XHProf enabled for {$transportFilter}\n");
+    } else {
+        fwrite(STDERR, "[benchmark_transport] WARNING: xhprof extension not loaded\n");
+    }
+}
+
 mt_srand(isset($options['seed']) ? (int)$options['seed'] : 0);
 shuffle($sources);
 mt_srand();
 
 fwrite(STDERR, sprintf(
-    "[benchmark] transport=%s sources=%d runs=%d\n",
+    "[benchmark_transport] transport=%s sources=%d runs=%d\n",
     $transportFilter,
     count($sources),
     $runs,
@@ -483,7 +679,7 @@ for ($attempt = 0; $attempt < 2; $attempt++) {
     try {
         for ($r = 0; $r < $runs; $r++) {
             if ($runs > 1) {
-                 sleep(5);
+                sleep(5);
                 fwrite(STDERR, sprintf(
                     "  [%s] run %d/%d starting%s\n",
                     $transportFilter,
@@ -544,6 +740,16 @@ foreach ($allPerUrl as $key => $data) {
         'avg_time' => round($avgTime, 6),
         'samples' => count($data['times']),
     ];
+}
+
+// Save XHProf profile before output
+if ($xhprofWorkerEnabled && extension_loaded('xhprof')) {
+    $xhprofData = xhprof_disable();
+    $xhprofWorkerPath = $xhprofWorkerDir.'/'.$xhprofTimestamp.'_'.$transportFilter.'.xhprof.tmp';
+    if (!is_dir(dirname($xhprofWorkerPath))) {
+        mkdir(dirname($xhprofWorkerPath), 0700, true);
+    }
+    file_put_contents($xhprofWorkerPath, serialize($xhprofData));
 }
 
 echo json_encode([

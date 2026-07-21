@@ -1,0 +1,38 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    ['host' => 'google.com',          'name' => 'Google'],
+    ['host' => 'youtube.com',         'name' => 'YouTube'],
+    ['host' => 'facebook.com',        'name' => 'Facebook'],
+    ['host' => 'instagram.com',       'name' => 'Instagram'],
+    ['host' => 'twitter.com',         'name' => 'Twitter / X'],
+    ['host' => 'linkedin.com',        'name' => 'LinkedIn'],
+    ['host' => 'reddit.com',          'name' => 'Reddit'],
+    ['host' => 'github.com',          'name' => 'GitHub'],
+    ['host' => 'stackoverflow.com',   'name' => 'Stack Overflow'],
+    ['host' => 'amazon.com',          'name' => 'Amazon'],
+    ['host' => 'netflix.com',         'name' => 'Netflix'],
+    ['host' => 'wikipedia.org',       'name' => 'Wikipedia'],
+    ['host' => 'microsoft.com',       'name' => 'Microsoft'],
+    ['host' => 'apple.com',           'name' => 'Apple'],
+    ['host' => 'cloudflare.com',      'name' => 'Cloudflare'],
+    ['host' => 'telegram.org',        'name' => 'Telegram'],
+    ['host' => 'whatsapp.com',        'name' => 'WhatsApp'],
+    ['host' => 'shopify.com',         'name' => 'Shopify'],
+    ['host' => 'wordpress.org',       'name' => 'WordPress'],
+    ['host' => 'laravel.com',         'name' => 'Laravel'],
+    ['host' => 'php.net',             'name' => 'PHP'],
+    ['host' => 'docker.com',          'name' => 'Docker'],
+    ['host' => 'nginx.org',           'name' => 'Nginx'],
+    ['host' => 'apache.org',          'name' => 'Apache'],
+    ['host' => 'mysql.com',           'name' => 'MySQL'],
+    ['host' => 'postgresql.org',      'name' => 'PostgreSQL'],
+    ['host' => 'redis.io',            'name' => 'Redis'],
+    ['host' => 'elastic.co',          'name' => 'Elastic'],
+    ['host' => 'mongodb.com',         'name' => 'MongoDB'],
+    ['host' => 'cloud.google.com',    'name' => 'Google Cloud'],
+    ['host' => 'aws.amazon.com',      'name' => 'AWS'],
+    ['host' => 'azure.microsoft.com', 'name' => 'Azure'],
+];

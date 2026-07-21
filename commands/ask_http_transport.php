@@ -29,9 +29,9 @@ CliActions::initRuntime($options);
 
 if (isset($options['help'])) {
     echo "Usage:
-php commands/ask-client.php                        # Default: fetch every 1s
-php commands/ask-client.php --interval=5           # Fetch every 5s
-php commands/ask-client.php --transport=guzzle     # Use a specific transport
+php commands/ask_http_transport.php                    # Default: fetch every 1s
+php commands/ask_http_transport.php --interval=5       # Fetch every 5s
+php commands/ask_http_transport.php --transport=guzzle # Use a specific transport
 
 Options:
   --interval=N                        Seconds between API calls (default: 1)
@@ -55,7 +55,7 @@ if ($transportOpt !== '') {
 }
 
 $sources = require __DIR__.'/includes/currency-sources.php';
-[$transportName, $makeTransport] = require __DIR__.'/includes/select-transport.php';
+[$transportName, $makeTransport] = require __DIR__.'/includes/select_transport.php';
 
 $kernelLogger = new ASKLogWrapper(minLevel: $logLevel);
 
@@ -69,7 +69,7 @@ $kernel
     ->addDaemon(
         daemon: new ASKFnDaemon(
             daemonContext: new ASKFnDaemonContext(
-                daemonName: 'ask-client',
+                daemonName: 'ask-http-transport',
                 logger: $kernelLogger,
             ),
             fnProduce: function (ASKFnDaemonContext $context) use ($sources, $client): void {

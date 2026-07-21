@@ -10,14 +10,14 @@ use BAGArt\ASKClient\Request\ASKHttpRequest;
 require_once __DIR__.'/../../../../vendor/autoload.php';
 
 $sources = require __DIR__.'/includes/currency-sources.php';
-[$transportName, $makeTransport] = require __DIR__.'/includes/select-transport.php';
+[$transportName, $makeTransport] = require __DIR__.'/includes/select_transport.php';
 
 $client = new ASKClient(
     transport: $makeTransport(),
 );
 
-$formatOk = require __DIR__.'/includes/format-ok.php';
-$formatErr = require __DIR__.'/includes/format-err.php';
+$formatOk = require __DIR__.'/includes/format_ok.php';
+$formatErr = require __DIR__.'/includes/format_err.php';
 
 /**
  * Await one future, run its parser, and print a uniform success/error line.

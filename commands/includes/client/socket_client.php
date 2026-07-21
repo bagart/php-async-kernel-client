@@ -10,7 +10,7 @@ use BAGArt\ASKClient\Contracts\Client\NetworkClientContract;
  * Build a raw TCP/TLS socket-based NetworkClientContract (HTTP/1.1).
  *
  * Usage:
- *   $makeClient = require __DIR__.'/../Client/socket-client.php';
+ *   $makeClient = require __DIR__.'/../client/socket_client.php';
  *   $client = $makeClient();
  *
  * @return callable(array<string, mixed>): NetworkClientContract

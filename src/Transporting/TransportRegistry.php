@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BAGArt\ASKClient\Transporting;
 
 use BAGArt\ASKClient\Contracts\Transporting\HttpTransportContract;
+use BAGArt\ASKClient\Transporting\HttpTransports\AmpHttpTransport;
 use BAGArt\ASKClient\Transporting\HttpTransports\ASKSocketTransport;
 use BAGArt\ASKClient\Transporting\HttpTransports\CurlMultiTransport;
 use BAGArt\ASKClient\Transporting\HttpTransports\GuzzleTransport;
@@ -17,6 +18,7 @@ final class TransportRegistry
 
     /** @var array<string, class-string<HttpTransportContract>> */
     private static array $default = [
+        AmpHttpTransport::TYPE => AmpHttpTransport::class,
         CurlMultiTransport::TYPE => CurlMultiTransport::class,
         GuzzleTransport::TYPE => GuzzleTransport::class,
         ASKSocketTransport::TYPE => ASKSocketTransport::class,
@@ -75,6 +77,7 @@ final class TransportRegistry
         }
 
         return match ($transport) {
+            AmpHttpTransport::class => new AmpHttpTransport(),
             CurlMultiTransport::class => new CurlMultiTransport(),
             GuzzleTransport::class => new GuzzleTransport(),
             ASKSocketTransport::class => new ASKSocketTransport(),

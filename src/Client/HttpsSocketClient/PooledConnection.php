@@ -54,6 +54,12 @@ final class PooledConnection
     /** microtime(true) of the last read/write activity, used for idle eviction. */
     public float $lastActivity;
 
+    /** Timestamp when this connection was created (microtime(true)). */
+    public readonly float $createdAt;
+
+    /** Number of requests that have been served over this connection. */
+    public int $useCount = 0;
+
     /**
      * @param resource     $socket
      */
@@ -69,6 +75,7 @@ final class PooledConnection
         $this->host = $host;
         $this->port = $port;
         $this->lastActivity = $startedAt;
+        $this->createdAt = $startedAt;
     }
 
     /**

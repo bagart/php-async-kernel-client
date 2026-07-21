@@ -46,14 +46,14 @@ Options:
 $interval = (int)($options['interval'] ?? 1);
 $logLevel = (string)($options['log-level'] ?? null) ?: ASKLogWrapper::LEVEL_DEFAULT;
 
-// Forward the parsed --transport to select-transport.php via env, since the
+// Forward the parsed --transport to select_transport.php via env, since the
 // selector calls getopt() itself and this daemon already consumed argv.
 if (is_string($options['transport'] ?? null) && $options['transport'] !== '') {
     putenv('ASK_TRANSPORT='.$options['transport']);
 }
 
 $sources = require __DIR__.'/includes/currency-sources.php';
-[$transportName, $makeTransport] = require __DIR__.'/includes/select-transport.php';
+[$transportName, $makeTransport] = require __DIR__.'/includes/select_transport.php';
 
 $kernelLogger = new ASKLogWrapper(minLevel: $logLevel);
 

@@ -10,7 +10,7 @@ use Psr\Http\Message\ResponseInterface;
 require_once __DIR__.'/../../../../vendor/autoload.php';
 
 $sources = require __DIR__.'/includes/currency-sources.php';
-[$clientName, $makeClient] = require __DIR__.'/includes/select-client.php';
+[$clientName, $makeClient] = require __DIR__.'/includes/select_client.php';
 
 $client = $makeClient();
 
@@ -51,8 +51,8 @@ $resolveAll = static function (array $promises, NetworkClientContract $client): 
     return $results;
 };
 
-$formatOk = require __DIR__.'/includes/format-ok.php';
-$formatErr = require __DIR__.'/includes/format-err.php';
+$formatOk = require __DIR__.'/includes/format_ok.php';
+$formatErr = require __DIR__.'/includes/format_err.php';
 
 $process = static function (array $source, ResponseInterface $response) use ($formatOk, $formatErr): bool {
     try {

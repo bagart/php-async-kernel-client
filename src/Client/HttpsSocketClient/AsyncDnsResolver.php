@@ -7,8 +7,10 @@ namespace BAGArt\ASKClient\Client\HttpsSocketClient;
 final class AsyncDnsResolver
 {
     private const int DNS_PORT = 53;
+    private const int DNS_OVER_TLS_PORT = 853;
     private const float QUERY_TIMEOUT = 3.0;
     private const int MAX_RETRIES = 1;
+    private const int TCP_READ_SIZE = 4096;
 
     private const array WELL_KNOWN_DNS = [
         '8.8.8.8',    // Google primary
@@ -36,14 +38,21 @@ final class AsyncDnsResolver
 
     private readonly float $failureTtl;
 
+    private readonly bool $useTls;
+
+    /** @var array<int, string> Resource ID => TCP read buffer (for TLS DNS framing) */
+    private array $tcpBuffers = [];
+
     public function __construct(
         float $ttl = 60.0,
         float $failureTtl = 10.0,
         ?array $dnsServers = null,
+        bool $useTls = false,
     ) {
         $this->ttl = $ttl;
         $this->failureTtl = $failureTtl;
         $this->dnsServers = $dnsServers ?? self::loadSystemDnsServers();
+        $this->useTls = $useTls;
     }
 
     /** @return array<int, string> */
@@ -138,14 +147,20 @@ final class AsyncDnsResolver
     {
         foreach ($this->pending as $host => $info) {
             $matched = false;
-            foreach ($info['sockets'] as $idx => $sock) {
+            $idx = null;
+            foreach ($info['sockets'] as $k => $sock) {
                 if ($sock === $socket) {
                     $matched = true;
+                    $idx = $k;
                     break;
                 }
             }
             if (!$matched) {
                 continue;
+            }
+
+            if ($this->useTls) {
+                return $this->processTcpResponse($host, $info, $socket, $idx);
             }
 
             $data = @fread($socket, 512);
@@ -187,6 +202,55 @@ final class AsyncDnsResolver
         return false;
     }
 
+    /**
+     * Process a TCP/TLS DNS response with length-prefixed framing (RFC 1035 §4.2.2).
+     */
+    private function processTcpResponse(string $host, array $info, mixed $socket, ?int $idx): bool
+    {
+        $data = @fread($socket, self::TCP_READ_SIZE);
+
+        if ($data === false || $data === '') {
+            // Connection closed or error — remove this socket
+            $this->closeSocket($socket);
+            if ($idx !== null) {
+                unset($this->pending[$host]['sockets'][$idx]);
+            }
+            if (empty($this->pending[$host]['sockets'])) {
+                $this->retryOrFallback($host);
+            }
+            return true;
+        }
+
+        $socketId = (int)$socket;
+        $buf = ($this->tcpBuffers[$socketId] ?? '') . $data;
+        $this->tcpBuffers[$socketId] = $buf;
+
+        // Process complete messages from buffer
+        while (strlen($this->tcpBuffers[$socketId]) >= 2) {
+            $msgLen = unpack('n', $this->tcpBuffers[$socketId])[1];
+            if (strlen($this->tcpBuffers[$socketId]) < 2 + $msgLen) {
+                break; // incomplete message, wait for more data
+            }
+
+            $dnsMsg = substr($this->tcpBuffers[$socketId], 2, $msgLen);
+            $this->tcpBuffers[$socketId] = substr($this->tcpBuffers[$socketId], 2 + $msgLen);
+
+            $ip = self::parseARecord($info['queryId'], $dnsMsg);
+
+            if ($ip !== null) {
+                self::$globalCache[$host] = [
+                    'ip' => $ip,
+                    'expiresAt' => microtime(true) + $this->ttl,
+                ];
+                $this->fresh[$host] = $ip;
+                $this->closePending($host);
+                return true;
+            }
+        }
+
+        return true;
+    }
+
     public function flushFresh(): array
     {
         $result = $this->fresh;
@@ -211,9 +275,13 @@ final class AsyncDnsResolver
         $packet = self::buildQuery($queryId, $host);
         $sockets = [];
 
+        $port = $this->useTls ? self::DNS_OVER_TLS_PORT : self::DNS_PORT;
+
         foreach ($this->dnsServers as $server) {
+            $uri = $this->useTls ? 'tls://'.$server.':'.$port : 'udp://'.$server.':'.$port;
+
             $socket = @stream_socket_client(
-                'udp://'.$server.':'.self::DNS_PORT,
+                $uri,
                 $errno,
                 $errstr,
                 3.0,
@@ -225,7 +293,10 @@ final class AsyncDnsResolver
 
             stream_set_blocking($socket, false);
 
-            if (@fwrite($socket, $packet) === false) {
+            // TCP/TLS DNS uses a 2-byte length prefix (RFC 1035 §4.2.2)
+            $writePacket = $this->useTls ? pack('n', strlen($packet)).$packet : $packet;
+
+            if (@fwrite($socket, $writePacket) === false) {
                 $this->closeSocket($socket);
                 continue;
             }
@@ -263,9 +334,13 @@ final class AsyncDnsResolver
         $packet = self::buildQuery($info['queryId'], $host);
         $sockets = [];
 
+        $port = $this->useTls ? self::DNS_OVER_TLS_PORT : self::DNS_PORT;
+
         foreach ($this->dnsServers as $server) {
+            $uri = $this->useTls ? 'tls://'.$server.':'.$port : 'udp://'.$server.':'.$port;
+
             $socket = @stream_socket_client(
-                'udp://'.$server.':'.self::DNS_PORT,
+                $uri,
                 $errno,
                 $errstr,
                 3.0,
@@ -277,7 +352,9 @@ final class AsyncDnsResolver
 
             stream_set_blocking($socket, false);
 
-            if (@fwrite($socket, $packet) === false) {
+            $writePacket = $this->useTls ? pack('n', strlen($packet)).$packet : $packet;
+
+            if (@fwrite($socket, $writePacket) === false) {
                 $this->closeSocket($socket);
                 continue;
             }
@@ -397,6 +474,7 @@ final class AsyncDnsResolver
     private function closeSocket(mixed $socket): void
     {
         if (is_resource($socket)) {
+            unset($this->tcpBuffers[(int)$socket]);
             @fclose($socket);
         }
     }

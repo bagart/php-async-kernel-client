@@ -22,7 +22,7 @@ declare(strict_types=1);
  *   2. the --client= CLI option.
  *
  * Usage:
- *   [$clientName, $makeClient] = require __DIR__.'/includes/select-client.php';
+ *   [$clientName, $makeClient] = require __DIR__.'/includes/select_client.php';
  *
  * @return array{string, callable(array<string, mixed>): \BAGArt\ASKClient\Contracts\Client\NetworkClientContract}
  */
@@ -34,12 +34,12 @@ if ($raw === false || $raw === '') {
 }
 
 return match (strtolower(ltrim($raw, '-='))) {
-    'promise-guzzle', 'guzzle-promise' => ['guzzle-promise', require __DIR__.'/Client/promise-guzzle-client.php'],
-    'promise-socket-h1', 'socket-h1-promise' => ['socket-h1-promise', require __DIR__.'/Client/promise-socket-client.php'],
-    'promise-curl', 'curl-promise' => ['curl-promise', require __DIR__.'/Client/promise-curl-client.php'],
-    'await-guzzle', 'guzzle-await', 'guzzle' => ['guzzle', require __DIR__.'/Client/guzzle-client.php'],
-    'await-socket-h1', 'socket-h1' => ['socket-h1', require __DIR__.'/Client/socket-client.php'],
-    'await-curl', 'curl-await', 'curl', '' => ['curl', require __DIR__.'/Client/curl-client.php'],
+    'promise-guzzle', 'guzzle-promise' => ['guzzle-promise', require __DIR__.'/client/promise_guzzle_client.php'],
+    'promise-socket-h1', 'socket-h1-promise' => ['socket-h1-promise', require __DIR__.'/client/promise_socket_client.php'],
+    'promise-curl', 'curl-promise' => ['curl-promise', require __DIR__.'/client/promise_curl_client.php'],
+    'await-guzzle', 'guzzle-await', 'guzzle' => ['guzzle', require __DIR__.'/client/guzzle_client.php'],
+    'await-socket-h1', 'socket-h1' => ['socket-h1', require __DIR__.'/client/socket_client.php'],
+    'await-curl', 'curl-await', 'curl', '' => ['curl', require __DIR__.'/client/curl_client.php'],
     default => throw new \InvalidArgumentException(
         "Unknown client: '{$raw}'. Supported: curl, await-curl, curl-await, promise-curl, curl-promise, "
         .'guzzle, await-guzzle, guzzle-await, promise-guzzle, guzzle-promise, '

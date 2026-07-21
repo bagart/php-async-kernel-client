@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace BAGArt\ASKClient\Client\HttpsSocketClient;
 
+use BAGArt\ASKClient\Client\ConnectionManager\ConnectionLease;
+use BAGArt\ASKClient\Client\ConnectionManager\MetricsCollector;
 use BAGArt\ASKClient\Contracts\Client\NetworkClientContract;
 use BAGArt\ASKClient\Contracts\Client\WarmableClientContract;
 use BAGArt\ASKClient\Exceptions\ASKNetworkException;
@@ -41,14 +43,27 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
     /** @var array<string, ASKPromise> */
     private array $connectionPromises = [];
 
+    /** @var array<int, ConnectionLease> */
+    private array $leases = [];
+
     /** @var array<string, true> Connections where TLS sent ClientHello and is waiting for server response. */
     private array $tlsWaitForRead = [];
 
     private readonly ConnectionPool $connectionPool;
     private readonly AsyncDnsResolver $dnsResolver;
+    private readonly MetricsCollector $metrics;
+
+    /** @var array<string, int> Per-host:port count of connections in connecting state. */
+    private array $connectingCount = [];
+
+    /** @var array<string, int> Per-host:port count of active (in-flight) connections. */
+    private array $activeCounts = [];
+
+    private int $tickCounter = 0;
 
     public function __construct(
         private readonly HttpsSocketClientConfig $config = new HttpsSocketClientConfig(),
+        ?MetricsCollector $metrics = null,
     ) {
         $this->connectionPool = new ConnectionPool(
             maxIdlePerHost: $this->config->maxIdlePerHost,
@@ -59,6 +74,13 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
         $this->dnsResolver = new AsyncDnsResolver(
             ttl: $this->config->dnsCacheTtl,
         );
+
+        $this->metrics = $metrics ?? new MetricsCollector();
+    }
+
+    public function metrics(): MetricsCollector
+    {
+        return $this->metrics;
     }
 
     public function request(ASKHttpRequest $request): ASKPromiseContract
@@ -92,7 +114,11 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
         $this->processConnections();
 
         if ($this->config->keepAlive) {
-            $this->connectionPool->evictIdle();
+            $this->tickCounter++;
+            if ($this->tickCounter >= 10) {
+                $this->tickCounter = 0;
+                $this->connectionPool->evictIdle();
+            }
         }
     }
 
@@ -200,14 +226,29 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
             }
 
             if ($connection === null) {
-                // Fresh non-blocking connect still in progress — retry next tick.
+                // Fresh non-blocking connect still in progress or cap reached — retry next tick.
                 continue;
             }
 
             $socketId = $this->socketIdOf($connection);
 
+            // Create a lease that will return the connection to the pool on release.
+            $lease = $this->createLease($connection, $pending['promise']);
+
             $this->activeConnections[$socketId] = $connection;
+            $this->leases[$socketId] = $lease;
             $this->connectionPromises[$socketId] = $pending['promise'];
+
+            // Slot reserved in acquireOrCreate — now the connection is active.
+            $key = $pending['key'];
+            if (isset($this->connectingCount[$key])) {
+                $this->connectingCount[$key]--;
+                if ($this->connectingCount[$key] <= 0) {
+                    unset($this->connectingCount[$key]);
+                }
+            }
+
+            $this->activeCounts[$key] = ($this->activeCounts[$key] ?? 0) + 1;
 
             $remove[] = $i;
             $dequeued++;
@@ -225,8 +266,11 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
 
     /**
      * Try to reuse an idle pooled connection for the host:port; otherwise open a new one.
-     * Returns null when a fresh non-blocking connect is in progress (caller should retry
-     * on the next tick).
+     * Returns null when:
+     *  - a fresh non-blocking connect is in progress (caller should retry on the next tick);
+     *  - the per-host connection cap has been reached (request stays queued).
+     *
+     * The returned connection is wrapped in a {@see ConnectionLease} stored in {@see $leases}.
      */
     private function acquireOrCreate(array $pending): ?PooledConnection
     {
@@ -243,26 +287,78 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
                         $pending['host'],
                     );
 
+                    $reused->useCount++;
+                    $this->metrics->incrementPoolHit();
+                    $this->metrics->incrementTotalRequests(reused: true);
+
                     return $reused;
                 }
 
+                $this->metrics->incrementPoolMiss();
                 $this->close($reused);
+            } else {
+                $this->metrics->incrementPoolMiss();
             }
         }
+
+        // ── Slot reservation ──────────────────────────────────────────
+        // Total connections for this host = connecting + active + pool-idle.
+        $totalForHost =
+            ($this->connectingCount[$key] ?? 0)
+            + $this->countActiveForHost($key)
+            + $this->connectionPool->idleCountForHost($key);
+
+        if ($totalForHost >= $this->config->maxConnectionsPerHost) {
+            $this->metrics->incrementPoolWaitCount();
+            // Stay in queue — next tick will retry when a slot opens.
+
+            return null;
+        }
+
+        // Reserve a connecting slot.
+        $this->connectingCount[$key] = ($this->connectingCount[$key] ?? 0) + 1;
 
         $ip = $this->resolveHost($pending['host']);
 
         if ($ip === null) {
+            $this->connectingCount[$key]--;
             return null;
         }
 
-        return $this->openConnection(
+        $conn = $this->openConnection(
             $ip,
             $pending['host'],
             $pending['port'],
             $key,
             $pending
         );
+
+        if ($conn === null) {
+            $this->connectingCount[$key]--;
+        }
+
+        $this->metrics->incrementConnectionsCreated();
+        $this->metrics->incrementTotalRequests(reused: false);
+
+        return $conn;
+    }
+
+    /**
+     * Count active (in-flight) connections for a given host:port key.
+     */
+    private function countActiveForHost(string $key): int
+    {
+        return $this->activeCounts[$key] ?? 0;
+    }
+
+    private function decrementActiveCount(string $key): void
+    {
+        if (isset($this->activeCounts[$key])) {
+            $this->activeCounts[$key]--;
+            if ($this->activeCounts[$key] <= 0) {
+                unset($this->activeCounts[$key]);
+            }
+        }
     }
 
     /**
@@ -274,6 +370,28 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
      */
     private function processConnections(): bool
     {
+        // Fast path: nothing to do.
+        if ($this->activeConnections === []) {
+            $dnsSockets = $this->dnsResolver->getReadSockets();
+            if ($dnsSockets === []) {
+                return false;
+            }
+
+            $writeIgnored = [];
+            $exceptIgnored = [];
+            $changed = @stream_select($dnsSockets, $writeIgnored, $exceptIgnored, 0, (int)(self::SELECT_TIMEOUT_SEC * 1_000_000));
+
+            if ($changed === false || $changed <= 0) {
+                return false;
+            }
+
+            foreach ($dnsSockets as $socket) {
+                $this->dnsResolver->processReadable($socket);
+            }
+
+            return true;
+        }
+
         $read = [];
         $write = [];
         $except = [];
@@ -291,6 +409,10 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
 
         foreach ($this->activeConnections as $id => $conn) {
             if (!is_resource($conn->socket)) {
+                if (isset($this->leases[$id])) {
+                    $this->leases[$id]->release();
+                    unset($this->leases[$id]);
+                }
                 $this->failConnection($id, 'invalid socket');
                 continue;
             }
@@ -359,7 +481,7 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
             return true;
         }
 
-        return $conn->written < strlen($conn->writePayload);
+        return $conn->writePayload !== '';
     }
 
     private function writeConnection(?int $id): void
@@ -397,13 +519,11 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
             }
         }
 
-        $totalLength = strlen($conn->writePayload);
-        if ($conn->written >= $totalLength) {
+        if ($conn->writePayload === '') {
             return;
         }
 
-        $chunk = substr($conn->writePayload, $conn->written);
-        $written = @fwrite($conn->socket, $chunk);
+        $written = @fwrite($conn->socket, $conn->writePayload);
 
         if ($written === false || $written === 0) {
             return;
@@ -411,6 +531,12 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
 
         $conn->written += $written;
         $conn->lastActivity = microtime(true);
+
+        if ($written < strlen($conn->writePayload)) {
+            $conn->writePayload = substr($conn->writePayload, $written);
+        } else {
+            $conn->writePayload = '';
+        }
     }
 
     private function detectProtocol(int $id, PooledConnection $s): void
@@ -642,8 +768,10 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
                 if (isset($this->connectionPromises[$socketId])) {
                     $this->failConnection($socketId, 'Connection closed prematurely by remote peer');
                 } else {
+                    $this->decrementActiveCount($conn->key);
+                    $this->metrics->recordConnectionClosed($conn->useCount, microtime(true) - $conn->createdAt);
                     $this->close($conn);
-                    unset($this->activeConnections[$socketId]);
+                    unset($this->activeConnections[$socketId], $this->leases[$socketId]);
                 }
             }
 
@@ -683,12 +811,14 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
         // `if ($promise !== null)` block — if $promise ever came back null the socket
         // leaked into activeConnections forever, polling a dead resource each tick.
         $promise = $this->connectionPromises[$socketId] ?? null;
+        $key = $conn->key;
         unset(
             $this->activeConnections[$socketId],
             $this->connectionPromises[$socketId],
+            $this->leases[$socketId],
         );
 
-        $this->releaseOrClose($conn, $response);
+        $this->releaseOrClose($conn, $response, $key);
 
         if ($promise !== null) {
             try {
@@ -706,9 +836,14 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
      *  • keep-alive + server did not signal close → return to pool for reuse;
      *  • otherwise → close the socket.
      */
-    private function releaseOrClose(PooledConnection $conn, ResponseInterface $response): void
+    private function releaseOrClose(PooledConnection $conn, ResponseInterface $response, ?string $key = null): void
     {
+        $lifetime = microtime(true) - $conn->createdAt;
+        $connKey = $key ?? $conn->key;
+
         if (!$this->config->keepAlive) {
+            $this->decrementActiveCount($connKey);
+            $this->metrics->recordConnectionClosed($conn->useCount, $lifetime);
             $this->close($conn);
             $conn->socket = null;
 
@@ -716,7 +851,10 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
         }
 
         if ($conn->socket === null || !is_resource($conn->socket)) {
+            $this->decrementActiveCount($connKey);
             $conn->socket = null;
+            $this->metrics->recordConnectionClosed($conn->useCount, $lifetime);
+
             return;
         }
 
@@ -729,8 +867,11 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
             || ($http1 && $connectionHeader !== 'keep-alive');
 
         if ($serverForcesClose) {
+            $this->decrementActiveCount($connKey);
+            $this->metrics->recordConnectionClosed($conn->useCount, $lifetime);
             $this->close($conn);
             $conn->socket = null;
+
             return;
         }
 
@@ -738,12 +879,16 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
         $isAlive = is_resource($conn->socket) && !($meta['eof'] ?? false);
 
         if (!$isAlive) {
+            $this->decrementActiveCount($connKey);
+            $this->metrics->recordConnectionClosed($conn->useCount, $lifetime);
             $this->close($conn);
             $conn->socket = null;
 
             return;
         }
 
+        // Connection goes to pool — decrement active count since it's no longer in-flight.
+        $this->decrementActiveCount($connKey);
         $this->connectionPool->release($conn);
     }
 
@@ -792,10 +937,14 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
         unset(
             $this->activeConnections[$socketId],
             $this->connectionPromises[$socketId],
+            $this->leases[$socketId],
             $this->tlsWaitForRead[$socketId],
         );
 
         if ($conn) {
+            $this->decrementActiveCount($conn->key);
+            $lifetime = microtime(true) - $conn->createdAt;
+            $this->metrics->recordConnectionClosed($conn->useCount, $lifetime);
             $this->close($conn);
         }
 
@@ -808,6 +957,22 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
             @fclose($conn->socket);
         }
         $conn->socket = null;
+    }
+
+    /**
+     * Wrap a connection in a ConnectionLease that returns it to the pool (or closes it)
+     * via releaseOrClose when the lease is released.
+     */
+    private function createLease(PooledConnection $conn, ASKPromise $promise): ConnectionLease
+    {
+        return new ConnectionLease(
+            connection: $conn,
+            onRelease: function (PooledConnection $released) use ($promise): void {
+                // ConnectionLease::release was called — either from releaseOrClose
+                // or from an error path. The real lifecycle is handled by
+                // releaseOrClose / failConnection in HttpsSocketClient.
+            },
+        );
     }
 
     /**
@@ -848,22 +1013,29 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
             return false;
         }
 
+        $start = microtime(true);
         $result = @stream_socket_enable_crypto(
             $conn->socket,
             true,
             STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT
         );
 
+        $duration = microtime(true) - $start;
+
         if ($result === true) {
             $conn->tlsReady = true;
+            $this->metrics->recordTlsHandshake($duration, true);
 
             return true;
         }
 
         if ($result === false) {
+            $this->metrics->recordTlsHandshake($duration, false);
+
             return false;
         }
 
+        // null = still negotiating, no metric yet — wait for completion.
         return null;
     }
 
@@ -883,7 +1055,9 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
 
     public function drain(): void
     {
-        while (!$this->isIdle()) {
+        $deadline = microtime(true) + 30.0;
+
+        while (!$this->isIdle() && microtime(true) < $deadline) {
             $this->tick(0);
         }
     }
@@ -913,6 +1087,10 @@ final class HttpsSocketClient implements NetworkClientContract, WarmableClientCo
 
     public function __destruct()
     {
+        // Release any remaining leases before closing the pool.
+        foreach ($this->leases as $lease) {
+            $lease->release();
+        }
         $this->connectionPool->closeAll();
     }
 }

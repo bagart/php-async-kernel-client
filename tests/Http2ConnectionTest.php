@@ -335,9 +335,13 @@ describe('Http2Connection (live network)', function () use ($liveNet) {
     });
 
     it('completes an HTTP/2 GET request end-to-end through HttpsSocketClient', function () {
-        // keepAlive=false lets ALPN negotiate h2 freely; the client then builds the
-        // request via Http2Connection and parses the response through the same state machine.
-        $client = new HttpsSocketClient(new HttpsSocketClientConfig(keepAlive: false));
+        // http2Enabled=true advertises h2 in ALPN. keepAlive=false avoids the
+        // post-negotiation http/1.1 override in openConnection() — h2 pool will
+        // remove that override when Http2Pool is implemented (P4).
+        $client = new HttpsSocketClient(new HttpsSocketClientConfig(
+            keepAlive: false,
+            http2Enabled: true,
+        ));
 
         $promise = $client->request(new ASKHttpRequest(
             url: 'https://open.er-api.com/v6/latest/USD',

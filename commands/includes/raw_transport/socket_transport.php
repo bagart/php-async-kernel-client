@@ -14,7 +14,7 @@ use BAGArt\ASKClient\Request\ASKHttpRequest;
  * Build a raw socket-based ASKClient transport (HTTP/1.1, one-shot requests).
  *
  * Usage:
- *   $makeTransport = require __DIR__.'/../RawTransport/socket-transport.php';
+ *   $makeTransport = require __DIR__.'/../raw_transport/socket_transport.php';
  *   $transport = $makeTransport();
  *
  * Response array: ['status', 'body', 'http_version'] (compatible with

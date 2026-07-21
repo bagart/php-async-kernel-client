@@ -9,7 +9,7 @@ use BAGArt\ASKClient\Request\ASKHttpRequest;
 require_once __DIR__.'/../../../../vendor/autoload.php';
 
 $sources = require __DIR__.'/includes/currency-sources.php';
-[$transportName, $makeTransport] = require __DIR__.'/includes/select-transport.php';
+[$transportName, $makeTransport] = require __DIR__.'/includes/select_transport.php';
 
 $client = new ASKClient(
     transport: $makeTransport(),

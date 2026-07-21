@@ -16,7 +16,7 @@ use BAGArt\ASKClient\Request\ASKHttpRequest;
  * work unchanged regardless of the chosen transport.
  *
  * Usage:
- *   $makeTransport = require __DIR__.'/includes/guzzle-transport.php';
+ *   $makeTransport = require __DIR__.'/includes/guzzle_transport.php';
  *   $transport = $makeTransport();
  *   $transport = $makeTransport(['timeout' => 20, 'http_errors' => false]);
  *
